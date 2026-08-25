@@ -2359,7 +2359,9 @@ WEAPONS.balisong = {
   mag:0, rpm:150, dmg:55, hs:2.0, stabDmg:120, reach:2.4,
   spread:0, recoil:[0,0], reload:0, adsFov:70, adsTime:0.16,
   sfx:{body:520, bright:5200, len:0.10, vol:0.45},
-  vm:{ hand:[0.132,-0.108,-0.215], scale:1.75, adsZ:-0.30 },
+  vm:{ hand:[0.106,-0.150,-0.252], scale:1.02, adsZ:-0.30,
+        /* solved, not guessed: blade forward-and-up, broad side to the eye */
+        rot:[-0.551, -0.374, 0.806] },
   hands:{ r:[-0.032,-0.004,-0.010], l:[-0.030,-0.010,-0.010] },
   /* both handles swing about the tang pin */
   pivots:{ handleA:[0.050, 0.000,  0.013], handleB:[0.050, 0.000, -0.013] },
@@ -2392,7 +2394,10 @@ WEAPONS.talon = {
   mag:0, rpm:150, dmg:60, hs:2.0, stabDmg:130, reach:2.2,
   spread:0, recoil:[0,0], reload:0, adsFov:70, adsTime:0.16,
   sfx:{body:470, bright:4600, len:0.11, vol:0.45},
-  vm:{ hand:[0.126,-0.100,-0.205], scale:1.95, adsZ:-0.28 },
+  vm:{ hand:[0.096,-0.053,-0.258], scale:1.38, adsZ:-0.28,
+        /* reverse grip, but shallow — a steeper angle buried the blade
+           inside the fist, where nothing of it was visible */
+        rot:[0.342, -0.107, -0.354] },
   hands:{ r:[-0.014,-0.008,-0.010], l:[-0.016,-0.014,-0.010] },
   /* the finger ring is the pivot the whole knife spins around */
   ringPivot:[-0.052,-0.004,0],
@@ -4897,14 +4902,26 @@ const Player = {
     if(this.adminItem && this.adminItem.weapon!==id) this.adminItem = null;
     if(this.gunRoot){ this.gunHolder.remove(this.gunRoot); disposeTree(this.gunRoot); }
     this.gunRoot = buildWeaponModel(id, this.currentItem);
-    this.gunRoot.rotation.y = Math.PI/2;
     const vm = this.W.vm || {hip:[0.15,-0.14,-0.36], scale:1, adsZ:-0.26};
     const sc = vm.scale || 1;
     this.gunRoot.scale.multiplyScalar(sc);
-    /* offset the weapon so the shooting grip lands exactly on the wrist
-       origin — that makes the wrist the pivot for every rotation */
+
+    /* Weapons are authored along +X, and a firearm wants that pointing
+       straight down the sight line. A knife does not — held that way it
+       reads as a tiny rifle. vm.rot lets a weapon declare how the hand
+       actually holds it, on top of the base quarter turn. */
+    const vr = vm.rot || [0,0,0];
+    const q = new THREE.Quaternion().setFromEuler(
+      new THREE.Euler(vr[0], Math.PI/2 + vr[1], vr[2], 'YXZ'));
+    this.gunRoot.quaternion.copy(q);
+
+    /* keep the grip on the wrist whatever that orientation turned out
+       to be, so the pivot stays correct for every animation */
     const gr = (this.W.hands && this.W.hands.r) || [0,0,0];
-    this.gunHolder.position.set(-gr[2]*sc, -gr[1]*sc, gr[0]*sc);
+    this.gunHolder.position
+      .set(gr[0]*sc, gr[1]*sc, gr[2]*sc)
+      .applyQuaternion(q)
+      .negate();
     this.gunHolder.add(this.gunRoot);
     const mods = this.gunRoot.userData.mods || {};
     this.inspectStyle = mods.anim || 'standard';
