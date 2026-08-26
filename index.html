@@ -4914,6 +4914,12 @@ const Player = {
     const q = new THREE.Quaternion().setFromEuler(
       new THREE.Euler(vr[0], Math.PI/2 + vr[1], vr[2], 'YXZ'));
     this.gunRoot.quaternion.copy(q);
+    this.baseQ = q.clone();        /* animations rotate relative to this */
+    this._kq = this._kq || new THREE.Quaternion();
+    this._ksq = this._ksq || new THREE.Quaternion();
+    this._kv = this._kv || new THREE.Vector3();
+    this._kv2 = this._kv2 || new THREE.Vector3();
+    this._kaxis = this._kaxis || new THREE.Vector3(0,0,1);
 
     /* keep the grip on the wrist whatever that orientation turned out
        to be, so the pivot stays correct for every animation */
@@ -4923,6 +4929,11 @@ const Player = {
       .applyQuaternion(q)
       .negate();
     this.gunHolder.add(this.gunRoot);
+    /* the balisong's two handle hinges, cached so the routine can drive
+       real handle angles instead of faking the fold */
+    const GRP = this.gunRoot.userData.groups || {};
+    this.pivA = GRP.handleA || null;
+    this.pivB = GRP.handleB || null;
     const mods = this.gunRoot.userData.mods || {};
     this.inspectStyle = mods.anim || 'standard';
     this.reloadStyle = mods.reloadStyle || 'standard';
@@ -5449,35 +5460,38 @@ const Player = {
       const win = (x,a2,b2)=> clamp((x-a2)/(b2-a2),0,1);
       const ease = x=> x*x*(3-2*x);
       let open = 1, spin = 0, aRot = 0, bRot = 0;
-
-      /* rotate the whole knife about a point that isn't the wrist */
-      const pivotSpin = (ang, dLocal)=>{
-        const dx = dLocal[2]*sc, dy = dLocal[1]*sc;   /* gun-local -> view */
-        const ca = Math.cos(ang), sa = Math.sin(ang);
-        rot.z += ang;
-        p.x   += dx - (dx*ca - dy*sa);
-        p.y   += dy - (dx*sa + dy*ca);
-      };
+      /* Spins happen about the KNIFE's own hinge axis (its local Z — the
+         balisong's tang pin, the karambit's finger ring), not about the
+         view axis. Once the blade stopped pointing down -Z, applying
+         these to the sway group rotated them around nothing sensible. */
+      const spinPivot = bali ? [0.050, 0.000, 0.000] : (W.ringPivot || [0,0,0]);
 
       if(this.equipT > 0){
         const u = equipU;
-        p.y   -= (1-ease(win(u,0,0.22)))*0.34;
-        p.x   += (1-ease(win(u,0,0.30)))*0.07;
-        rot.x -= (1-ease(win(u,0,0.30)))*0.70;
+        p.y   -= (1-ease(win(u,0,0.20)))*0.34;
+        p.x   += (1-ease(win(u,0,0.28)))*0.07;
+        rot.x -= (1-ease(win(u,0,0.28)))*0.55;
         if(bali){
-          /* closed, fan open (bite handle leads), aerial roll, settle */
-          const fanA = ease(win(u,0.20,0.46));
-          const fanB = ease(win(u,0.30,0.58));
-          aRot = (1-fanA)*Math.PI;
+          /* Comes out of the pocket shut. The safe handle fans away
+             first, the bite handle follows it round, and the whole
+             knife turns once on the pin while that happens — which is
+             what a real opening looks like. One whole turn, so the
+             last frame of the draw already IS the rest pose. */
+          const fanB = ease(win(u,0.16,0.42));
+          const fanA = ease(win(u,0.34,0.62));
           bRot = (1-fanB)*Math.PI;
-          spin = ease(win(u,0.46,0.80))*TAU;
-          open = fanB;
-          if(!this._k1 && u>0.22){ this._k1=1; Audio7.reloadClick(1700); }
-          if(!this._k2 && u>0.58){ this._k2=1; Audio7.reloadClick(1200); }
-          if(!this._k3 && u>0.84){ this._k3=1; Audio7.reloadClick(2100); }
+          aRot = (1-fanA)*Math.PI;
+          spin = ease(win(u,0.16,0.56))*Math.PI + ease(win(u,0.54,0.92))*Math.PI;
+          p.y  += Math.sin(win(u,0.20,0.92)*Math.PI)*0.045;
+          open  = Math.max(fanA, fanB);
+          if(!this._k1 && u>0.18){ this._k1=1; Audio7.reloadClick(1700); }
+          if(!this._k2 && u>0.44){ this._k2=1; Audio7.reloadClick(1200); }
+          if(!this._k3 && u>0.90){ this._k3=1; Audio7.reloadClick(2100); }
         } else {
-          spin = ease(win(u,0.18,0.72))*TAU;
-          if(!this._k1 && u>0.20){ this._k1=1; Audio7.reloadClick(1500); }
+          /* one clean pass round the finger ring */
+          spin = ease(win(u,0.14,0.86))*TAU;
+          rot.z += Math.sin(win(u,0.10,0.90)*Math.PI)*0.30;
+          if(!this._k1 && u>0.18){ this._k1=1; Audio7.reloadClick(1500); }
         }
         if(this.equipT<=0) this._k1=this._k2=this._k3=0;
       }
@@ -5509,43 +5523,68 @@ const Player = {
       else if(this.inspecting > 0){
         this.inspecting -= dt;
         const u = 1 - clamp(this.inspecting/this.inspectLen,0,1);
-        p.x += -0.045*Math.sin(u*Math.PI);
-        p.z -= 0.055*Math.sin(u*Math.PI);
+        /* draw it in toward the eye rather than off to the side — a
+           trick you cannot see is not worth doing */
+        const lift = Math.sin(u*Math.PI);
+        p.x += -0.020*lift;
+        p.y +=  0.030*lift;
+        /* the talon is held nearly a third larger and much closer, so
+           the same pull-in that reads well on the balisong buries the
+           camera in the blade */
+        p.z -= (bali? 0.100 : 0.030)*lift;
         if(bali){
-          /* close, half-fan, full fan, aerial, snap shut, open */
-          const cl   = ease(win(u,0.02,0.14));
-          const fanA = ease(win(u,0.16,0.32));
-          const fanB = ease(win(u,0.34,0.50));
-          const shut = ease(win(u,0.74,0.84));
-          const fin  = ease(win(u,0.86,0.98));
-          aRot = (1-cl)*0 + cl*Math.PI;
-          aRot = aRot*(1-fanA);
-          bRot = cl*Math.PI*(1-fanB);
-          aRot = aRot + shut*Math.PI*(1-fin);
-          bRot = bRot + shut*Math.PI*(1-fin);
-          spin = ease(win(u,0.50,0.74))*TAU + ease(win(u,0.86,1.0))*TAU*0.5;
-          rot.x += Math.sin(u*TAU)*0.18;
-          open = 1-shut+fin;
-          if(!this._k1 && u>0.14){ this._k1=1; Audio7.reloadClick(1800); }
-          if(!this._k2 && u>0.50){ this._k2=1; Audio7.reloadClick(1300); }
-          if(!this._k3 && u>0.84){ this._k3=1; Audio7.reloadClick(2200); }
-          if(!this._k4 && u>0.97){ this._k4=1; Audio7.reloadClick(1600); }
+          /* Snap shut, fan back open with a turn, an aerial, shut again,
+             then a last flourish that lands open. Every beat is stated
+             as how CLOSED each handle is (0 open, 1 folded over the
+             blade) so the two never fight each other, and the four
+             turns are whole — there is nothing left to unwind at the
+             end, which is what used to make it jerk back into shape. */
+          const shut1 = ease(win(u,0.02,0.12));
+          const fanB  = ease(win(u,0.16,0.32));
+          const fanA  = ease(win(u,0.30,0.46));
+          const shut2 = ease(win(u,0.70,0.80));
+          const fin   = ease(win(u,0.86,0.96));
+          aRot = (shut1*(1-fanA) + shut2*(1-fin))*Math.PI;
+          bRot = (shut1*(1-fanB) + shut2*(1-fin))*Math.PI;
+          /* Three whole turns, each given enough of the clock to be
+             read as a turn rather than a blur — a full 2-pi crammed
+             into a tenth of the routine just strobes. */
+          spin = ease(win(u,0.16,0.46))*TAU     /* the opening fan  */
+               + ease(win(u,0.48,0.68))*TAU     /* the aerial       */
+               + ease(win(u,0.70,0.92))*TAU;    /* close and finish */
+          p.y  += Math.sin(win(u,0.48,0.70)*Math.PI)*0.055;   /* toss */
+          rot.x += Math.sin(win(u,0.10,0.96)*TAU)*0.14;
+          open  = 1 - Math.max(shut1*(1-fanA), shut2*(1-fin));
+          if(!this._k1 && u>0.12){ this._k1=1; Audio7.reloadClick(1800); }
+          if(!this._k2 && u>0.46){ this._k2=1; Audio7.reloadClick(1300); }
+          if(!this._k3 && u>0.80){ this._k3=1; Audio7.reloadClick(2200); }
+          if(!this._k4 && u>0.96){ this._k4=1; Audio7.reloadClick(1600); }
         } else {
-          /* two finger spins on the ring, then a reverse-grip flip */
-          spin = ease(win(u,0.06,0.52))*TAU*2 + ease(win(u,0.58,0.92))*TAU;
-          rot.x += Math.sin(win(u,0.55,0.95)*Math.PI)*0.55;
-          rot.y += Math.sin(u*TAU)*0.22;
+          /* two finger spins on the ring, a catch, then one more —
+             three whole turns, so it settles instead of snapping */
+          spin = ease(win(u,0.04,0.52))*TAU*2 + ease(win(u,0.56,0.92))*TAU;
+          rot.x += Math.sin(win(u,0.52,0.92)*Math.PI)*0.26;
+          rot.z += Math.sin(win(u,0.04,0.92)*TAU)*0.16;
           if(!this._k1 && u>0.10){ this._k1=1; Audio7.reloadClick(1500); }
-          if(!this._k2 && u>0.60){ this._k2=1; Audio7.reloadClick(1900); }
+          if(!this._k2 && u>0.54){ this._k2=1; Audio7.reloadClick(1900); }
         }
         if(this.inspecting<=0){ this.inspecting=0; this._k1=this._k2=this._k3=this._k4=0; }
       }
 
-      if(spin) pivotSpin(spin, W.ringPivot || [0,0,0]);
-      if(bali){
-        if(g.handleA) g.handleA.rotation.z = aRot;
-        if(g.handleB) g.handleB.rotation.z = bRot;
-      }
+      /* the handles turn on the tang pin — the same axis the knife
+         spins about, because it is literally the same pin */
+      if(this.pivA) this.pivA.rotation.z = aRot;
+      if(this.pivB) this.pivB.rotation.z = -bRot;
+
+      /* build the spin in the knife's frame, keeping the hinge point fixed */
+      const sq = this._ksq.setFromAxisAngle(this._kaxis, spin);
+      const tot = this._kq.copy(this.baseQ).multiply(sq);
+      this.gunRoot.quaternion.copy(tot);
+      const pv = this._kv.set(spinPivot[0]*sc, spinPivot[1]*sc, spinPivot[2]*sc);
+      const p0 = this._kv2.copy(pv).applyQuaternion(this.baseQ);
+      pv.applyQuaternion(tot);
+      this.gunRoot.position.copy(p0).sub(pv);
+
       this.knifeOpen = open;
     }
 
@@ -5663,10 +5702,17 @@ const Player = {
       const away = (st==='standard')? 0.06 : 0.14;
       p.x += -0.055*e; p.y += 0.030*e; p.z -= away*e;
 
+      /* Whole turns get recorded so they can be unwound the moment the
+         animation ends. The sway group LERPS toward its target, so when a
+         full 2-pi vanished from that target in a single frame the weapon
+         travelled all the way back around — that is the ugly reset. */
+      this._turns = 0;
+
       if(st==='spin'){
         /* one full barrel roll: the weapon turns inside a loosened grip,
            which is a thing hands actually do */
         rot.z += u*TAU;
+        this._turns = u;
         rot.x += e*0.30;
         rot.y += Math.sin(u*Math.PI)*0.28;
         p.y   += Math.sin(u*TAU)*0.022;
@@ -5676,6 +5722,7 @@ const Player = {
            the guard and the translation is compensated out. */
         const ang = u*TAU;
         rot.z += ang;
+        this._turns = u;
         const dx = 0.0, dy = 0.045, dz = -0.030;   /* guard, relative to wrist */
         const ca = Math.cos(ang), sa = Math.sin(ang);
         p.x += dx - (dx*ca - dy*sa);
@@ -5693,7 +5740,20 @@ const Player = {
         rot.y += e*0.42;
         rot.x += Math.sin(u*Math.PI*2)*0.26;
       }
-      if(this.inspecting<=0) this.inspecting = 0;
+      if(this.inspecting<=0){
+        this.inspecting = 0;
+        /* A finished turn is a whole 2-pi, which is the same pose it
+           started in — so drop it from BOTH the target and the live
+           value on the same frame. Take it off only one of them and the
+           weapon has to travel all the way back around, which is the
+           snap that used to end these. */
+        if(this._turns){
+          const wt = Math.round(this._turns)*TAU;
+          rot.z -= wt;
+          this.sway.rotation.z -= wt;
+          this._turns = 0;
+        }
+      }
     }
 
     /* --- recoil springs --- */
